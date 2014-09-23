@@ -17,6 +17,7 @@ from .entity import Exchange, Queue
 from .compression import compress
 from .serialization import encode
 from .utils import maybe_list
+from librabbitmq import ChannelError
 
 __all__ = ['Exchange', 'Queue', 'Producer', 'Consumer']
 
@@ -341,7 +342,12 @@ class Consumer(object):
 
             H, T = self.queues[:-1], self.queues[-1]
             for queue in H:
-                self._basic_consume(queue, no_ack=no_ack, nowait=True)
+                try:
+                    self._basic_consume(queue, no_ack=no_ack, nowait=True)
+                except ChannelError:
+                    # handle missing queues and declare them if not found
+                    queue.declare()
+                    self._basic_consume(queue, no_ack=no_ack, nowait=True)
             self._basic_consume(T, no_ack=no_ack, nowait=False)
 
     def cancel(self):
