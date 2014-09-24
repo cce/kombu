@@ -344,10 +344,13 @@ class Consumer(object):
             for queue in H:
                 try:
                     self._basic_consume(queue, no_ack=no_ack, nowait=True)
-                except ChannelError:
-                    # handle missing queues and declare them if not found
-                    queue.declare()
-                    self._basic_consume(queue, no_ack=no_ack, nowait=True)
+                except ChannelError, e:
+                    if "basic.consume: server channel error 404, message: NOT_FOUND - no queue" in e.message:
+                        # handle missing queues and declare them if not found
+                        queue.declare()
+                        self._basic_consume(queue, no_ack=no_ack, nowait=True)
+                    else:
+                        raise
             self._basic_consume(T, no_ack=no_ack, nowait=False)
 
     def cancel(self):
