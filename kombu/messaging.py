@@ -346,6 +346,7 @@ class Consumer(object):
                     self._basic_consume(queue, no_ack=no_ack, nowait=True)
                 except ChannelError, e:
                     if "basic.consume: server channel error 404, message: NOT_FOUND - no queue" in e.message:
+                        print "Re-declaring missing queue in response to", e.message
                         # handle missing queues and declare them if not found
                         queue.declare()
                         self._basic_consume(queue, no_ack=no_ack, nowait=True)
