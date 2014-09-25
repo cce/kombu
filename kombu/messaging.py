@@ -340,19 +340,22 @@ class Consumer(object):
         if self.queues:
             no_ack = self.no_ack if no_ack is None else no_ack
 
-            H, T = self.queues[:-1], self.queues[-1]
-            for queue in H:
+            def retry_consume(queue, nowait):
                 try:
-                    self._basic_consume(queue, no_ack=no_ack, nowait=True)
+                    self._basic_consume(queue, no_ack=no_ack, nowait=nowait)
                 except ChannelError, e:
-                    if "basic.consume: server channel error 404, message: NOT_FOUND - no queue" in e.message:
-                        print "Re-declaring missing queue in response to", e.message
+                    if "basic.consume: server channel error 404, message: NOT_FOUND" in e.message:
+                        print "Re-declaring missing queue %r for %r" % (queue, e)
                         # handle missing queues and declare them if not found
                         queue.declare()
-                        self._basic_consume(queue, no_ack=no_ack, nowait=True)
+                        self._basic_consume(queue, no_ack=no_ack, nowait=nowait)
                     else:
                         raise
-            self._basic_consume(T, no_ack=no_ack, nowait=False)
+
+            H, T = self.queues[:-1], self.queues[-1]
+            for queue in H:
+                retry_consume(queue, nowait=True)
+            retry_consume(T, nowait=False)
 
     def cancel(self):
         """End all active queue consumers.
