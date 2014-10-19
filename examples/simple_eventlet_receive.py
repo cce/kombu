@@ -6,11 +6,7 @@ You can use `simple_receive.py` (or `complete_receive.py`) to receive the
 message sent.
 
 """
-from __future__ import with_statement
-
 import eventlet
-
-from Queue import Empty
 
 from kombu import Connection
 
@@ -34,10 +30,10 @@ def wait_many(timeout=1):
             while True:
                 try:
                     message = queue.get(block=False, timeout=timeout)
-                except Empty:
+                except queue.Empty:
                     break
                 else:
                     message.ack()
                     print(message.payload)
 
-spawn(wait_many).wait()
+eventlet.spawn(wait_many).wait()

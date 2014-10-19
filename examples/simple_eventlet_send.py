@@ -6,8 +6,6 @@ You can use `simple_receive.py` (or `complete_receive.py`) to receive the
 message sent.
 
 """
-from __future__ import with_statement
-
 import eventlet
 
 from kombu import Connection
@@ -33,7 +31,7 @@ def send_many(n):
                 queue.put({'hello': 'world%s' % (i, )})
 
             pool = eventlet.GreenPool(10)
-            for i in xrange(n):
+            for i in range(n):
                 pool.spawn(send_message, i)
             pool.waitall()
 

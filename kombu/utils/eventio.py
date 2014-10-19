@@ -4,49 +4,47 @@ kombu.utils.eventio
 
 Evented IO support for multiple platforms.
 
-:copyright: (c) 2009 - 2012 by Ask Solem.
-:license: BSD, see LICENSE for more details.
-
 """
 from __future__ import absolute_import
 
 import errno
+import select as __select__
 import socket
 
-from select import select as _selectf
+from numbers import Integral
 
-try:
-    from select import epoll
-except ImportError:
-    epoll = None  # noqa
+_selectf = __select__.select
+_selecterr = __select__.error
+epoll = getattr(__select__, 'epoll', None)
+kqueue = getattr(__select__, 'kqueue', None)
+kevent = getattr(__select__, 'kevent', None)
+KQ_EV_ADD = getattr(__select__, 'KQ_EV_ADD', 1)
+KQ_EV_DELETE = getattr(__select__, 'KQ_EV_DELETE', 2)
+KQ_EV_ENABLE = getattr(__select__, 'KQ_EV_ENABLE', 4)
+KQ_EV_CLEAR = getattr(__select__, 'KQ_EV_CLEAR', 32)
+KQ_EV_ERROR = getattr(__select__, 'KQ_EV_ERROR', 16384)
+KQ_EV_EOF = getattr(__select__, 'KQ_EV_EOF', 32768)
+KQ_FILTER_READ = getattr(__select__, 'KQ_FILTER_READ', -1)
+KQ_FILTER_WRITE = getattr(__select__, 'KQ_FILTER_WRITE', -2)
+KQ_FILTER_AIO = getattr(__select__, 'KQ_FILTER_AIO', -3)
+KQ_FILTER_VNODE = getattr(__select__, 'KQ_FILTER_VNODE', -4)
+KQ_FILTER_PROC = getattr(__select__, 'KQ_FILTER_PROC', -5)
+KQ_FILTER_SIGNAL = getattr(__select__, 'KQ_FILTER_SIGNAL', -6)
+KQ_FILTER_TIMER = getattr(__select__, 'KQ_FILTER_TIMER', -7)
+KQ_NOTE_LOWAT = getattr(__select__, 'KQ_NOTE_LOWAT', 1)
+KQ_NOTE_DELETE = getattr(__select__, 'KQ_NOTE_DELETE', 1)
+KQ_NOTE_WRITE = getattr(__select__, 'KQ_NOTE_WRITE', 2)
+KQ_NOTE_EXTEND = getattr(__select__, 'KQ_NOTE_EXTEND', 4)
+KQ_NOTE_ATTRIB = getattr(__select__, 'KQ_NOTE_ATTRIB', 8)
+KQ_NOTE_LINK = getattr(__select__, 'KQ_NOTE_LINK', 16)
+KQ_NOTE_RENAME = getattr(__select__, 'KQ_NOTE_RENAME', 32)
+KQ_NOTE_REVOKE = getattr(__select__, 'kQ_NOTE_REVOKE', 64)
 
-try:
-    from select import (
-        kqueue,
-        kevent,
-        KQ_EV_ADD,
-        KQ_EV_DELETE,
-        KQ_EV_EOF,
-        KQ_EV_ERROR,
-        KQ_EV_ENABLE,
-        KQ_EV_CLEAR,
-        KQ_FILTER_WRITE,
-        KQ_FILTER_READ,
-        KQ_FILTER_VNODE,
-        KQ_NOTE_WRITE,
-        KQ_NOTE_EXTEND,
-        KQ_NOTE_DELETE,
-        KQ_NOTE_ATTRIB,
-    )
-except ImportError:
-    kqueue = kevent = None                                      # noqa
-    KQ_EV_ADD = KQ_EV_DELETE = KQ_EV_EOF = KQ_EV_ERROR = 0      # noqa
-    KQ_EV_ENABLE = KQ_EV_CLEAR = KQ_EV_VNODE = 0                # noqa
-    KQ_FILTER_WRITE = KQ_FILTER_READ = 0                        # noqa
-    KQ_NOTE_WRITE = KQ_NOTE_EXTEND = 0                          # noqa
-    KQ_NOTE_ATTRIB = KQ_NOTE_DELETE = 0                         # noqa
 
 from kombu.syn import detect_environment
+
+from . import fileno
+from .compat import get_errno
 
 __all__ = ['poll']
 
@@ -54,18 +52,10 @@ READ = POLL_READ = 0x001
 WRITE = POLL_WRITE = 0x004
 ERR = POLL_ERR = 0x008 | 0x010
 
-
-def get_errno(exc):
-    try:
-        return exc.errno
-    except AttributeError:
-        try:
-            # e.args = (errno, reason)
-            if isinstance(exc.args, tuple) and len(exc.args) == 2:
-                return exc.args[0]
-        except AttributeError:
-            pass
-    return 0
+try:
+    SELECT_BAD_FD = set((errno.EBADF, errno.WSAENOTSOCK))
+except AttributeError:
+    SELECT_BAD_FD = set((errno.EBADF,))
 
 
 class Poller(object):
@@ -73,7 +63,7 @@ class Poller(object):
     def poll(self, timeout):
         try:
             return self._poll(timeout)
-        except Exception, exc:
+        except Exception as exc:
             if get_errno(exc) != errno.EINTR:
                 raise
 
@@ -86,18 +76,16 @@ class _epoll(Poller):
     def register(self, fd, events):
         try:
             self._epoll.register(fd, events)
-        except Exception, exc:
+        except Exception as exc:
             if get_errno(exc) != errno.EEXIST:
                 raise
 
     def unregister(self, fd):
         try:
             self._epoll.unregister(fd)
-        except socket.error:
+        except (socket.error, ValueError, KeyError, TypeError):
             pass
-        except ValueError:
-            pass
-        except IOError, exc:
+        except (IOError, OSError) as exc:
             if get_errno(exc) != errno.ENOENT:
                 raise
 
@@ -153,8 +141,9 @@ class _kqueue(Poller):
                            filter=KQ_FILTER_WRITE,
                            flags=flags))
         if not kevents or events & READ:
-            kevents.append(kevent(fd,
-                filter=KQ_FILTER_READ, flags=flags))
+            kevents.append(
+                kevent(fd, filter=KQ_FILTER_READ, flags=flags),
+            )
         control = self._kcontrol
         for e in kevents:
             try:
@@ -182,7 +171,7 @@ class _kqueue(Poller):
                 file_changes.append(k)
         if file_changes:
             self.on_file_change(file_changes)
-        return events.items()
+        return list(events.items())
 
     def close(self):
         self._kqueue.close()
@@ -196,38 +185,66 @@ class _select(Poller):
                      self._efd) = set(), set(), set()
 
     def register(self, fd, events):
+        fd = fileno(fd)
         if events & ERR:
             self._efd.add(fd)
-            self._rfd.add(fd)
         if events & WRITE:
             self._wfd.add(fd)
         if events & READ:
             self._rfd.add(fd)
 
+    def _remove_bad(self):
+        for fd in self._rfd | self._wfd | self._efd:
+            try:
+                _selectf([fd], [], [], 0)
+            except (_selecterr, socket.error) as exc:
+                if get_errno(exc) in SELECT_BAD_FD:
+                    self.unregister(fd)
+
     def unregister(self, fd):
+        try:
+            fd = fileno(fd)
+        except socket.error as exc:
+            # we don't know the previous fd of this object
+            # but it will be removed by the next poll iteration.
+            if get_errno(exc) in SELECT_BAD_FD:
+                return
+            raise
         self._rfd.discard(fd)
         self._wfd.discard(fd)
         self._efd.discard(fd)
 
     def _poll(self, timeout):
-        read, write, error = _selectf(self._rfd, self._wfd, self._efd, timeout)
+        try:
+            read, write, error = _selectf(
+                self._rfd, self._wfd, self._efd, timeout,
+            )
+        except (_selecterr, socket.error) as exc:
+            if get_errno(exc) == errno.EINTR:
+                return
+            elif get_errno(exc) in SELECT_BAD_FD:
+                return self._remove_bad()
+            raise
+
         events = {}
         for fd in read:
-            if not isinstance(fd, int):
+            if not isinstance(fd, Integral):
                 fd = fd.fileno()
             events[fd] = events.get(fd, 0) | READ
         for fd in write:
-            if not isinstance(fd, int):
+            if not isinstance(fd, Integral):
                 fd = fd.fileno()
             events[fd] = events.get(fd, 0) | WRITE
         for fd in error:
-            if not isinstance(fd, int):
+            if not isinstance(fd, Integral):
                 fd = fd.fileno()
             events[fd] = events.get(fd, 0) | ERR
-        return events.items()
+        return list(events.items())
 
     def close(self):
-        pass
+        self._rfd.clear()
+        self._wfd.clear()
+        self._efd.clear()
 
 
 def _get_poller():
@@ -239,7 +256,7 @@ def _get_poller():
         return _epoll
     elif kqueue:
         # Py2.6+ on BSD / Darwin
-        return _kqueue
+        return _select  # was: _kqueue
     else:
         return _select
 

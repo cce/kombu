@@ -1,21 +1,19 @@
-from __future__ import absolute_import
-from __future__ import with_statement
+from __future__ import absolute_import, unicode_literals
 
 import anyjson
+import pickle
 
-from mock import patch
+from collections import defaultdict
 
-from kombu import Connection
+from kombu import Connection, Consumer, Producer, Exchange, Queue
 from kombu.exceptions import MessageStateError
-from kombu.messaging import Consumer, Producer
-from kombu.entity import Exchange, Queue
+from kombu.utils import ChannelPromise
 
+from .case import Case, Mock, patch
 from .mocks import Transport
-from .utils import TestCase
-from .utils import Mock
 
 
-class test_Producer(TestCase):
+class test_Producer(Case):
 
     def setUp(self):
         self.exchange = Exchange('foo', 'direct')
@@ -24,7 +22,21 @@ class test_Producer(TestCase):
         self.assertTrue(self.connection.connection.connected)
         self.assertFalse(self.exchange.is_bound)
 
-    @patch('kombu.common.maybe_declare')
+    def test_repr(self):
+        p = Producer(self.connection)
+        self.assertTrue(repr(p))
+
+    def test_pickle(self):
+        chan = Mock()
+        producer = Producer(chan, serializer='pickle')
+        p2 = pickle.loads(pickle.dumps(producer))
+        self.assertEqual(p2.serializer, producer.serializer)
+
+    def test_no_channel(self):
+        p = Producer(None)
+        self.assertFalse(p._channel)
+
+    @patch('kombu.messaging.maybe_declare')
     def test_maybe_declare(self, maybe_declare):
         p = self.connection.Producer()
         q = Queue('foo')
@@ -57,7 +69,7 @@ class test_Producer(TestCase):
                       'p.declare() declares exchange')
 
     def test_prepare(self):
-        message = {u'the quick brown fox': u'jumps over the lazy dog'}
+        message = {'the quick brown fox': 'jumps over the lazy dog'}
         channel = self.connection.channel()
         p = Producer(channel, self.exchange, serializer='json')
         m, ctype, cencoding = p._prepare(message, headers={})
@@ -66,7 +78,7 @@ class test_Producer(TestCase):
         self.assertEqual(cencoding, 'utf-8')
 
     def test_prepare_compression(self):
-        message = {u'the quick brown fox': u'jumps over the lazy dog'}
+        message = {'the quick brown fox': 'jumps over the lazy dog'}
         channel = self.connection.channel()
         p = Producer(channel, self.exchange, serializer='json')
         headers = {}
@@ -76,8 +88,10 @@ class test_Producer(TestCase):
         self.assertEqual(cencoding, 'utf-8')
         self.assertEqual(headers['compression'], 'application/x-gzip')
         import zlib
-        self.assertEqual(anyjson.loads(
-                            zlib.decompress(m).decode('utf-8')), message)
+        self.assertEqual(
+            anyjson.loads(zlib.decompress(m).decode('utf-8')),
+            message,
+        )
 
     def test_prepare_custom_content_type(self):
         message = 'the quick brown fox'.encode('utf-8')
@@ -94,7 +108,7 @@ class test_Producer(TestCase):
         self.assertEqual(cencoding, 'alien')
 
     def test_prepare_is_already_unicode(self):
-        message = u'the quick brown fox'
+        message = 'the quick brown fox'
         channel = self.connection.channel()
         p = Producer(channel, self.exchange, serializer='json')
         m, ctype, cencoding = p._prepare(message, content_type='text/plain')
@@ -102,23 +116,39 @@ class test_Producer(TestCase):
         self.assertEqual(ctype, 'text/plain')
         self.assertEqual(cencoding, 'utf-8')
         m, ctype, cencoding = p._prepare(message, content_type='text/plain',
-                                        content_encoding='utf-8')
+                                         content_encoding='utf-8')
         self.assertEqual(m, message.encode('utf-8'))
         self.assertEqual(ctype, 'text/plain')
         self.assertEqual(cencoding, 'utf-8')
 
     def test_publish_with_Exchange_instance(self):
         p = self.connection.Producer()
-        p.exchange.publish = Mock()
-        p.publish('hello', exchange=Exchange('foo'))
-        self.assertEqual(p.exchange.publish.call_args[0][4], 'foo')
+        p.channel = Mock()
+        p.publish('hello', exchange=Exchange('foo'), delivery_mode='transient')
+        self.assertEqual(
+            p._channel.basic_publish.call_args[1]['exchange'], 'foo',
+        )
+
+    def test_set_on_return(self):
+        chan = Mock()
+        chan.events = defaultdict(Mock)
+        p = Producer(ChannelPromise(lambda: chan), on_return='on_return')
+        p.channel
+        chan.events['basic_return'].add.assert_called_with('on_return')
+
+    def test_publish_retry_calls_ensure(self):
+        p = Producer(Mock())
+        p._connection = Mock()
+        ensure = p.connection.ensure = Mock()
+        p.publish('foo', exchange='foo', retry=True)
+        self.assertTrue(ensure.called)
 
     def test_publish_retry_with_declare(self):
         p = self.connection.Producer()
         p.maybe_declare = Mock()
         p.connection.ensure = Mock()
         ex = Exchange('foo')
-        p._publish('hello', 'rk', 0, 0, ex, declare=[ex])
+        p._publish('hello', 0, '', '', {}, {}, 'rk', 0, 0, ex, declare=[ex])
         p.maybe_declare.assert_called_with(ex)
 
     def test_revive_when_channel_is_connection(self):
@@ -142,12 +172,13 @@ class test_Producer(TestCase):
     def test_connection_property_handles_AttributeError(self):
         p = self.connection.Producer()
         p.channel = object()
+        p.__connection__ = None
         self.assertIsNone(p.connection)
 
     def test_publish(self):
         channel = self.connection.channel()
         p = Producer(channel, self.exchange, serializer='json')
-        message = {u'the quick brown fox': u'jumps over the lazy dog'}
+        message = {'the quick brown fox': 'jumps over the lazy dog'}
         ret = p.publish(message, routing_key='process')
         self.assertIn('prepare_message', channel)
         self.assertIn('basic_publish', channel)
@@ -185,13 +216,83 @@ class test_Producer(TestCase):
         self.assertTrue(p.on_return)
 
 
-class test_Consumer(TestCase):
+class test_Consumer(Case):
 
     def setUp(self):
         self.connection = Connection(transport=Transport)
         self.connection.connect()
         self.assertTrue(self.connection.connection.connected)
         self.exchange = Exchange('foo', 'direct')
+
+    def test_accept(self):
+        a = Consumer(self.connection)
+        self.assertIsNone(a.accept)
+        b = Consumer(self.connection, accept=['json', 'pickle'])
+        self.assertSetEqual(
+            b.accept,
+            set(['application/json', 'application/x-python-serialize']),
+        )
+        c = Consumer(self.connection, accept=b.accept)
+        self.assertSetEqual(b.accept, c.accept)
+
+    def test_enter_exit_cancel_raises(self):
+        c = Consumer(self.connection)
+        c.cancel = Mock(name='Consumer.cancel')
+        c.cancel.side_effect = KeyError('foo')
+        with c:
+            pass
+        c.cancel.assert_called_with()
+
+    def test_receive_callback_accept(self):
+        message = Mock(name='Message')
+        message.errors = []
+        callback = Mock(name='on_message')
+        c = Consumer(self.connection, accept=['json'], on_message=callback)
+        c.on_decode_error = None
+        c.channel = Mock(name='channel')
+        c.channel.message_to_python = None
+
+        c._receive_callback(message)
+        callback.assert_called_with(message)
+        self.assertSetEqual(message.accept, c.accept)
+
+    def test_accept__content_disallowed(self):
+        conn = Connection('memory://')
+        q = Queue('foo', exchange=self.exchange)
+        p = conn.Producer()
+        p.publish(
+            {'complex': object()},
+            declare=[q], exchange=self.exchange, serializer='pickle',
+        )
+
+        callback = Mock(name='callback')
+        with conn.Consumer(queues=[q], callbacks=[callback]) as consumer:
+            with self.assertRaises(consumer.ContentDisallowed):
+                conn.drain_events(timeout=1)
+        self.assertFalse(callback.called)
+
+    def test_accept__content_allowed(self):
+        conn = Connection('memory://')
+        q = Queue('foo', exchange=self.exchange)
+        p = conn.Producer()
+        p.publish(
+            {'complex': object()},
+            declare=[q], exchange=self.exchange, serializer='pickle',
+        )
+
+        callback = Mock(name='callback')
+        with conn.Consumer(queues=[q], accept=['pickle'],
+                           callbacks=[callback]):
+            conn.drain_events(timeout=1)
+        self.assertTrue(callback.called)
+        body, message = callback.call_args[0]
+        self.assertTrue(body['complex'])
+
+    def test_set_no_channel(self):
+        c = Consumer(None)
+        self.assertIsNone(c.channel)
+        c.revive(Mock())
+        self.assertTrue(c.channel)
 
     def test_set_no_ack(self):
         channel = self.connection.channel()
@@ -222,9 +323,13 @@ class test_Consumer(TestCase):
 
     def test_consuming_from(self):
         consumer = self.connection.Consumer()
-        consumer.queues[:] = [Queue('a'), Queue('b')]
+        consumer.queues[:] = [Queue('a'), Queue('b'), Queue('d')]
+        consumer._active_tags = {'a': 1, 'b': 2}
+
         self.assertFalse(consumer.consuming_from(Queue('c')))
         self.assertFalse(consumer.consuming_from('c'))
+        self.assertFalse(consumer.consuming_from(Queue('d')))
+        self.assertFalse(consumer.consuming_from('d'))
         self.assertTrue(consumer.consuming_from(Queue('a')))
         self.assertTrue(consumer.consuming_from(Queue('b')))
         self.assertTrue(consumer.consuming_from('b'))
@@ -236,6 +341,7 @@ class test_Consumer(TestCase):
         channel.message_to_python = None
         try:
             message = Mock()
+            message.errors = []
             message.decode.return_value = 'Hello'
             recv = c.receive = Mock()
             c._receive_callback(message)
@@ -373,11 +479,11 @@ class test_Consumer(TestCase):
             message.payload     # trigger cache
 
         consumer.register_callback(callback)
-        consumer._receive_callback({u'foo': u'bar'})
+        consumer._receive_callback({'foo': 'bar'})
 
         self.assertIn('basic_ack', channel)
         self.assertIn('message_to_python', channel)
-        self.assertEqual(received[0], {u'foo': u'bar'})
+        self.assertEqual(received[0], {'foo': 'bar'})
 
     def test_basic_ack_twice(self):
         channel = self.connection.channel()

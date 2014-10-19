@@ -1,6 +1,7 @@
 from __future__ import absolute_import
 
 import anyjson
+import atexit
 import os
 import sys
 
@@ -12,6 +13,24 @@ try:
     anyjson.force_implementation('json')
 except ImportError:
     anyjson.force_implementation('simplejson')
+
+
+def teardown():
+    # Workaround for multiprocessing bug where logging
+    # is attempted after global already collected at shutdown.
+    cancelled = set()
+    try:
+        import multiprocessing.util
+        cancelled.add(multiprocessing.util._exit_function)
+    except (AttributeError, ImportError):
+        pass
+
+    try:
+        atexit._exithandlers[:] = [
+            e for e in atexit._exithandlers if e[0] not in cancelled
+        ]
+    except AttributeError:  # pragma: no cover
+        pass  # Py3 missing _exithandlers
 
 
 def find_distribution_modules(name=__name__, file=__file__):
@@ -52,12 +71,17 @@ def setup_django_env():
         return
 
     if not settings.configured:
-        settings.configure(DATABASES={'default': {
-                                'ENGINE': 'django.db.backends.sqlite3',
-                                'NAME': ':memory:'}},
-                           DATABASE_ENGINE='sqlite3',
-                           DATABASE_NAME=':memory:',
-                           INSTALLED_APPS=('kombu.transport.django', ))
+        settings.configure(
+            DATABASES={
+                'default': {
+                    'ENGINE': 'django.db.backends.sqlite3',
+                    'NAME': ':memory:',
+                },
+            },
+            DATABASE_ENGINE='sqlite3',
+            DATABASE_NAME=':memory:',
+            INSTALLED_APPS=('kombu.transport.django', ),
+        )
 
 
 def setup():

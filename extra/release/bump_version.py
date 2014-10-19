@@ -1,7 +1,5 @@
 #!/usr/bin/env python
-
 from __future__ import absolute_import
-from __future__ import with_statement
 
 import errno
 import os
@@ -13,6 +11,7 @@ from contextlib import contextmanager
 from tempfile import NamedTemporaryFile
 
 rq = lambda s: s.strip("\"'")
+str_t = str if sys.version_info[0] >= 3 else basestring
 
 
 def cmd(*args):
@@ -23,7 +22,7 @@ def cmd(*args):
 def no_enoent():
     try:
         yield
-    except OSError, exc:
+    except OSError as exc:
         if exc.errno != errno.ENOENT:
             raise
 
@@ -56,7 +55,7 @@ class TupleVersion(object):
         v = list(v)
 
         def quote(lit):
-            if isinstance(lit, basestring):
+            if isinstance(lit, str_t):
                 return '"%s"' % (lit, )
             return str(lit)
 
@@ -122,6 +121,7 @@ _filetype_to_type = {"py": PyVersion,
                      "c": CPPVersion,
                      "h": CPPVersion}
 
+
 def filetype_to_type(filename):
     _, _, suffix = filename.rpartition(".")
     return _filetype_to_type[suffix](filename)
@@ -148,7 +148,7 @@ def bump(*files, **kwargs):
         v.write(next)
 
     print(cmd("git", "commit", "-m", "Bumps version to %s" % (to_str(next), ),
-        *[f.filename for f in files]))
+          *[f.filename for f in files]))
     print(cmd("git", "tag", "v%s" % (to_str(next), )))
 
 

@@ -4,13 +4,10 @@ kombu.compression
 
 Compression utilities.
 
-:copyright: (c) 2009 - 2012 by Ask Solem.
-:license: BSD, see LICENSE for more details.
-
 """
 from __future__ import absolute_import
 
-from kombu.utils.encoding import ensure_bytes, bytes_to_str
+from kombu.utils.encoding import ensure_bytes
 
 import zlib
 
@@ -37,7 +34,7 @@ def register(encoder, decoder, content_type, aliases=[]):
 
 
 def encoders():
-    """Returns a list of available compression methods."""
+    """Return a list of available compression methods."""
     return list(_encoders)
 
 
@@ -70,7 +67,7 @@ def decompress(body, content_type):
     :param content_type: mime-type of compression method used.
 
     """
-    return bytes_to_str(get_decoder(content_type)(body))
+    return get_decoder(content_type)(body)
 
 
 register(zlib.compress,

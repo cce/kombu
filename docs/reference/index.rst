@@ -8,23 +8,29 @@
 .. toctree::
     :maxdepth: 2
 
-    kombu.connection
-    kombu.simple
-    kombu.messaging
-    kombu.entity
+    kombu
     kombu.common
     kombu.mixins
+    kombu.simple
     kombu.clocks
     kombu.compat
     kombu.pidbox
     kombu.exceptions
     kombu.log
+    kombu.connection
+    kombu.message
+    kombu.compression
+    kombu.pools
+    kombu.abstract
+    kombu.syn
+    kombu.async
+    kombu.async.hub
+    kombu.async.semaphore
+    kombu.async.timer
+    kombu.async.debug
     kombu.transport
-    kombu.transport.amqplib
-    kombu.transport.librabbitmq
     kombu.transport.pyamqp
-    kombu.transport.pika
-    kombu.transport.pika2
+    kombu.transport.librabbitmq
     kombu.transport.memory
     kombu.transport.redis
     kombu.transport.zmq
@@ -40,20 +46,22 @@
     kombu.transport.sqlalchemy
     kombu.transport.sqlalchemy.models
     kombu.transport.SQS
+    kombu.transport.SLMQ
+    kombu.transport.pyro
+    kombu.transport.amqplib
     kombu.transport.base
     kombu.transport.virtual
     kombu.transport.virtual.exchange
     kombu.transport.virtual.scheduling
     kombu.serialization
-    kombu.compression
-    kombu.pools
-    kombu.abstract
-    kombu.syn
     kombu.utils
+    kombu.utils.eventio
     kombu.utils.limits
     kombu.utils.compat
     kombu.utils.debug
     kombu.utils.encoding
     kombu.utils.functional
-    kombu.utils.finalize
     kombu.utils.url
+    kombu.utils.text
+    kombu.utils.amq_manager
+    kombu.five

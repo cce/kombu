@@ -4,9 +4,6 @@ kombu.transport.amqplib
 
 amqplib transport.
 
-:copyright: (c) 2009 - 2012 by Ask Solem.
-:license: BSD, see LICENSE for more details.
-
 """
 from __future__ import absolute_import
 
@@ -20,13 +17,29 @@ except ImportError:
         pass
 from struct import unpack
 
-from amqplib import client_0_8 as amqp
-from amqplib.client_0_8 import transport
-from amqplib.client_0_8.channel import Channel as _Channel
-from amqplib.client_0_8.exceptions import AMQPConnectionException
-from amqplib.client_0_8.exceptions import AMQPChannelException
 
-from kombu.exceptions import StdChannelError
+class NA(object):
+    pass
+
+try:
+    from amqplib import client_0_8 as amqp
+    from amqplib.client_0_8 import transport
+    from amqplib.client_0_8.channel import Channel as _Channel
+    from amqplib.client_0_8.exceptions import AMQPConnectionException
+    from amqplib.client_0_8.exceptions import AMQPChannelException
+except ImportError:  # pragma: no cover
+
+    class NAx(object):
+        pass
+    amqp = NA
+    amqp.Connection = NA
+    transport = _Channel = NA                               # noqa
+    # Sphinx crashes if this is NA, must be different class
+    transport.TCPTransport = transport.SSLTransport = NAx
+    AMQPConnectionException = AMQPChannelException = NA     # noqa
+
+
+from kombu.five import items
 from kombu.utils.encoding import str_to_bytes
 from kombu.utils.amq_manager import get_manager
 
@@ -55,19 +68,20 @@ class TCPTransport(transport.TCPTransport):
                 'Framing Error, received 0x%02x while expecting 0xce' % ch)
 
     def _read(self, n, initial=False):
-        while len(self._read_buffer) < n:
+        read_buffer = self._read_buffer
+        while len(read_buffer) < n:
             try:
-                s = self.sock.recv(65536)
-            except socket.error, exc:
+                s = self.sock.recv(n - len(read_buffer))
+            except socket.error as exc:
                 if not initial and exc.errno in (errno.EAGAIN, errno.EINTR):
                     continue
                 raise
             if not s:
                 raise IOError('Socket closed')
-            self._read_buffer += s
+            read_buffer += s
 
-        result = self._read_buffer[:n]
-        self._read_buffer = self._read_buffer[n:]
+        result = read_buffer[:n]
+        self._read_buffer = read_buffer[n:]
 
         return result
 
@@ -107,7 +121,7 @@ class SSLTransport(transport.SSLTransport):
         while len(result) < n:
             try:
                 s = self.sslobj.read(n - len(result))
-            except socket.error, exc:
+            except socket.error as exc:
                 if not initial and exc.errno in (errno.EAGAIN, errno.EINTR):
                     continue
                 raise
@@ -128,6 +142,7 @@ transport.SSLTransport = SSLTransport
 
 
 class Connection(amqp.Connection):  # pragma: no cover
+    connected = True
 
     def _do_close(self, *args, **kwargs):
         # amqplib does not ignore socket errors when connection
@@ -158,20 +173,20 @@ class Connection(amqp.Connection):  # pragma: no cover
         """Wait for an event on a channel."""
         chanmap = self.channels
         chanid, method_sig, args, content = self._wait_multiple(
-                chanmap, None, timeout=timeout)
+            chanmap, None, timeout=timeout)
 
         channel = chanmap[chanid]
 
-        if content \
-        and channel.auto_decode \
-        and hasattr(content, 'content_encoding'):
+        if (content
+                and channel.auto_decode
+                and hasattr(content, 'content_encoding')):
             try:
                 content.body = content.body.decode(content.content_encoding)
             except Exception:
                 pass
 
         amqp_method = self._method_override.get(method_sig) or \
-                        channel._METHOD_MAP.get(method_sig, None)
+            channel._METHOD_MAP.get(method_sig, None)
 
         if amqp_method is None:
             raise Exception('Unknown AMQP method (%d, %d)' % method_sig)
@@ -191,7 +206,7 @@ class Connection(amqp.Connection):  # pragma: no cover
         try:
             try:
                 return self.method_reader.read_method()
-            except SSLError, exc:
+            except SSLError as exc:
                 # http://bugs.python.org/issue10272
                 if 'timed out' in str(exc):
                     raise socket.timeout()
@@ -204,13 +219,13 @@ class Connection(amqp.Connection):  # pragma: no cover
                 sock.settimeout(prev)
 
     def _wait_multiple(self, channels, allowed_methods, timeout=None):
-        for channel_id, channel in channels.iteritems():
+        for channel_id, channel in items(channels):
             method_queue = channel.method_queue
             for queued_method in method_queue:
                 method_sig = queued_method[0]
-                if (allowed_methods is None) \
-                or (method_sig in allowed_methods) \
-                or (method_sig == (20, 40)):
+                if (allowed_methods is None
+                        or method_sig in allowed_methods
+                        or method_sig == (20, 40)):
                     method_queue.remove(queued_method)
                     method_sig, args, content = queued_method
                     return channel_id, method_sig, args, content
@@ -221,10 +236,10 @@ class Connection(amqp.Connection):  # pragma: no cover
         while 1:
             channel, method_sig, args, content = read_timeout(timeout)
 
-            if (channel in channels) \
-            and ((allowed_methods is None) \
-                or (method_sig in allowed_methods) \
-                or (method_sig == (20, 40))):
+            if (channel in channels
+                    and allowed_methods is None
+                    or method_sig in allowed_methods
+                    or method_sig == (20, 40)):
                 return channel, method_sig, args, content
 
             # Not the channel and/or method we were looking for. Queue
@@ -250,30 +265,30 @@ class Message(base.Message):
 
     def __init__(self, channel, msg, **kwargs):
         props = msg.properties
-        super(Message, self).__init__(channel,
-                body=msg.body,
-                delivery_tag=msg.delivery_tag,
-                content_type=props.get('content_type'),
-                content_encoding=props.get('content_encoding'),
-                delivery_info=msg.delivery_info,
-                properties=msg.properties,
-                headers=props.get('application_headers') or {},
-                **kwargs)
+        super(Message, self).__init__(
+            channel,
+            body=msg.body,
+            delivery_tag=msg.delivery_tag,
+            content_type=props.get('content_type'),
+            content_encoding=props.get('content_encoding'),
+            delivery_info=msg.delivery_info,
+            properties=msg.properties,
+            headers=props.get('application_headers') or {},
+            **kwargs)
 
 
 class Channel(_Channel, base.StdChannel):
     Message = Message
-    events = {'basic_return': []}
+    events = {'basic_return': set()}
 
     def __init__(self, *args, **kwargs):
         self.no_ack_consumers = set()
         super(Channel, self).__init__(*args, **kwargs)
 
-    def prepare_message(self, message_data, priority=None,
-                content_type=None, content_encoding=None, headers=None,
-                properties=None):
+    def prepare_message(self, body, priority=None, content_type=None,
+                        content_encoding=None, headers=None, properties=None):
         """Encapsulate data into a AMQP message."""
-        return amqp.Message(message_data, priority=priority,
+        return amqp.Message(body, priority=priority,
                             content_type=content_type,
                             content_encoding=content_encoding,
                             application_headers=headers,
@@ -307,21 +322,23 @@ class Transport(base.Transport):
 
     # it's very annoying that amqplib sometimes raises AttributeError
     # if the connection is lost, but nothing we can do about that here.
-    connection_errors = (AMQPConnectionException,
-                         socket.error,
-                         IOError,
-                         OSError,
-                         AttributeError)
-    channel_errors = (StdChannelError, AMQPChannelException, )
+    connection_errors = (
+        base.Transport.connection_errors + (
+            AMQPConnectionException,
+            socket.error, IOError, OSError, AttributeError)
+    )
+    channel_errors = base.Transport.channel_errors + (AMQPChannelException, )
 
-    nb_keep_draining = True
-    driver_name = "amqplib"
-    driver_type = "amqp"
+    driver_name = 'amqplib'
+    driver_type = 'amqp'
     supports_ev = True
 
     def __init__(self, client, **kwargs):
         self.client = client
-        self.default_port = kwargs.get("default_port") or self.default_port
+        self.default_port = kwargs.get('default_port') or self.default_port
+
+        if amqp is NA:
+            raise ImportError('Missing amqplib library (pip install amqplib)')
 
     def create_channel(self, connection):
         return connection.channel()
@@ -332,7 +349,7 @@ class Transport(base.Transport):
     def establish_connection(self):
         """Establish connection to the AMQP broker."""
         conninfo = self.client
-        for name, default_value in self.default_connection_params.items():
+        for name, default_value in items(self.default_connection_params):
             if not getattr(conninfo, name, None):
                 setattr(conninfo, name, default_value)
         if conninfo.hostname == 'localhost':
@@ -371,14 +388,9 @@ class Transport(base.Transport):
     def verify_connection(self, connection):
         return connection.channels is not None and self.is_alive(connection)
 
-    def eventmap(self, connection):
-        return {connection.method_reader.source.sock: self.client.drain_nowait}
-
-    def on_poll_init(self, poller):
-        pass
-
-    def on_poll_start(self):
-        return {}
+    def register_with_event_loop(self, connection, loop):
+        loop.add_reader(connection.method_reader.source.sock,
+                        self.on_readable, connection, loop)
 
     @property
     def default_connection_params(self):

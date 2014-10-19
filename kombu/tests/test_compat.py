@@ -1,17 +1,13 @@
 from __future__ import absolute_import
-from __future__ import with_statement
-
-from mock import patch
 
 from kombu import Connection, Exchange, Queue
 from kombu import compat
 
+from .case import Case, Mock, patch
 from .mocks import Transport, Channel
-from .utils import TestCase
-from .utils import Mock
 
 
-class test_misc(TestCase):
+class test_misc(Case):
 
     def test_iterconsume(self):
 
@@ -31,7 +27,7 @@ class test_misc(TestCase):
         conn = MyConnection()
         consumer = Consumer()
         it = compat._iterconsume(conn, consumer)
-        self.assertEqual(it.next(), 1)
+        self.assertEqual(next(it), 1)
         self.assertTrue(consumer.active)
 
         it2 = compat._iterconsume(conn, consumer, limit=10)
@@ -78,7 +74,7 @@ class test_misc(TestCase):
                          Queue.from_dict('foo', **dict(defs)))
 
 
-class test_Publisher(TestCase):
+class test_Publisher(Case):
 
     def setUp(self):
         self.connection = Connection(transport=Transport)
@@ -102,7 +98,7 @@ class test_Publisher(TestCase):
         self.assertFalse(pub2.exchange.durable)
 
         explicit = Exchange('test_Publisher_constructor_explicit',
-                                  type='topic')
+                            type='topic')
         pub3 = compat.Publisher(self.connection,
                                 exchange=explicit)
         self.assertEqual(pub3.exchange, explicit)
@@ -129,7 +125,7 @@ class test_Publisher(TestCase):
         self.assertTrue(pub._closed)
 
 
-class test_Consumer(TestCase):
+class test_Consumer(Case):
 
     def setUp(self):
         self.connection = Connection(transport=Transport)
@@ -220,7 +216,8 @@ class test_Consumer(TestCase):
             callback_called[0] = True
 
         c.backend.to_deliver.append('42')
-        self.assertEqual(c.fetch().payload, '42')
+        payload = c.fetch().payload
+        self.assertEqual(payload, '42')
         c.backend.to_deliver.append('46')
         c.register_callback(receive)
         self.assertEqual(c.fetch(enable_callbacks=True).payload, '46')
@@ -241,9 +238,9 @@ class test_Consumer(TestCase):
                 for i in range(limit):
                     yield i
 
-        c = C(self.connection, queue=n, exchange=n,
-                               routing_key='rkey')
-        self.assertEqual(c.wait(10), range(10))
+        c = C(self.connection,
+              queue=n, exchange=n, routing_key='rkey')
+        self.assertEqual(c.wait(10), list(range(10)))
         c.close()
 
     def test_iterqueue(self, n='test_iterqueue'):
@@ -256,16 +253,26 @@ class test_Consumer(TestCase):
                 i[0] += 1
                 return z
 
-        c = C(self.connection, queue=n, exchange=n,
-                               routing_key='rkey')
-        self.assertEqual(list(c.iterqueue(limit=10)), range(10))
+        c = C(self.connection,
+              queue=n, exchange=n, routing_key='rkey')
+        self.assertEqual(list(c.iterqueue(limit=10)), list(range(10)))
         c.close()
 
 
-class test_ConsumerSet(TestCase):
+class test_ConsumerSet(Case):
 
     def setUp(self):
         self.connection = Connection(transport=Transport)
+
+    def test_providing_channel(self):
+        chan = Mock(name='channel')
+        cs = compat.ConsumerSet(self.connection, channel=chan)
+        self.assertTrue(cs._provided_channel)
+        self.assertIs(cs.backend, chan)
+
+        cs.cancel = Mock(name='cancel')
+        cs.close()
+        self.assertFalse(chan.close.called)
 
     @patch('kombu.compat._iterconsume')
     def test_iterconsume(self, _iterconsume, n='test_iterconsume'):
@@ -289,7 +296,7 @@ class test_ConsumerSet(TestCase):
                                     'routing_key': 'xyz'}}
         consumers = [compat.Consumer(self.connection, queue=prefix + str(i),
                                      exchange=prefix + str(i))
-                        for i in range(3)]
+                     for i in range(3)]
         c = compat.ConsumerSet(self.connection, consumers=consumers)
         c2 = compat.ConsumerSet(self.connection, from_dict=dcon)
 
@@ -303,9 +310,12 @@ class test_ConsumerSet(TestCase):
         for cq in c.queues:
             self.assertIs(cq.channel, c.channel)
 
-        c2.add_consumer_from_dict({'%s.xxx' % prefix: {
+        c2.add_consumer_from_dict({
+            '%s.xxx' % prefix: {
                 'exchange': '%s.xxx' % prefix,
-                'routing_key': 'xxx'}})
+                'routing_key': 'xxx',
+            },
+        })
         self.assertEqual(len(c2.queues), 3)
         for c2q in c2.queues:
             self.assertIs(c2q.channel, c2.channel)

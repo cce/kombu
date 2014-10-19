@@ -4,21 +4,25 @@ kombu.transport.beanstalk
 
 Beanstalk transport.
 
-:copyright: (c) 2010 - 2012 by David Ziegler.
+:copyright: (c) 2010 - 2013 by David Ziegler.
 :license: BSD, see LICENSE for more details.
 
 """
 from __future__ import absolute_import
 
-import beanstalkc
 import socket
 
 from anyjson import loads, dumps
-from Queue import Empty
 
-from kombu.exceptions import StdChannelError
+from kombu.five import Empty
+from kombu.utils.encoding import bytes_to_str
 
 from . import virtual
+
+try:
+    import beanstalkc
+except ImportError:  # pragma: no cover
+    beanstalkc = None  # noqa
 
 DEFAULT_PORT = 11300
 
@@ -32,7 +36,7 @@ class Channel(virtual.Channel):
         item, dest = None, None
         if job:
             try:
-                item = loads(job.body)
+                item = loads(bytes_to_str(job.body))
                 dest = job.stats()['tube']
             except Exception:
                 job.bury()
@@ -56,9 +60,8 @@ class Channel(virtual.Channel):
         if queue not in self.client.watching():
             self.client.watch(queue)
 
-        [self.client.ignore(active)
-            for active in self.client.watching()
-                if active != queue]
+        [self.client.ignore(active) for active in self.client.watching()
+         if active != queue]
 
         job = self.client.reserve(timeout=1)
         item, dest = self._parse_job(job)
@@ -72,13 +75,11 @@ class Channel(virtual.Channel):
 
         watching = self.client.watching()
 
-        [self.client.watch(active)
-            for active in queues
-                if active not in watching]
+        [self.client.watch(active) for active in queues
+         if active not in watching]
 
-        [self.client.ignore(active)
-            for active in watching
-                if active not in queues]
+        [self.client.ignore(active) for active in watching
+         if active not in queues]
 
         job = self.client.reserve(timeout=timeout)
         return self._parse_job(job)
@@ -88,8 +89,8 @@ class Channel(virtual.Channel):
             self.client.watch(queue)
 
         [self.client.ignore(active)
-                for active in self.client.watching()
-                    if active != queue]
+         for active in self.client.watching()
+         if active != queue]
         count = 0
         while 1:
             job = self.client.reserve(timeout=1)
@@ -128,16 +129,27 @@ class Transport(virtual.Transport):
 
     polling_interval = 1
     default_port = DEFAULT_PORT
-    connection_errors = (socket.error,
-                         beanstalkc.SocketError,
-                         IOError)
-    channel_errors = (StdChannelError,
-                      socket.error,
-                      IOError,
-                      beanstalkc.SocketError,
-                      beanstalkc.BeanstalkcException)
+    connection_errors = (
+        virtual.Transport.connection_errors + (
+            socket.error, IOError,
+            getattr(beanstalkc, 'SocketError', None),
+        )
+    )
+    channel_errors = (
+        virtual.Transport.channel_errors + (
+            socket.error, IOError,
+            getattr(beanstalkc, 'SocketError', None),
+            getattr(beanstalkc, 'BeanstalkcException', None),
+        )
+    )
     driver_type = 'beanstalk'
     driver_name = 'beanstalkc'
+
+    def __init__(self, *args, **kwargs):
+        if beanstalkc is None:
+            raise ImportError(
+                'Missing beanstalkc library (pip install beanstalkc)')
+        super(Transport, self).__init__(*args, **kwargs)
 
     def driver_version(self):
         return beanstalkc.__version__
